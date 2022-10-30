@@ -1,7 +1,9 @@
-#!/bin/sh
+#!/bin/bash
 #
 # update_kernel.sh: (c) 2017 Jonas Gorski <jonas.gorski@gmail.com>
 # Licensed under the terms of the GNU GPL License version 2
+
+umask 022
 
 BUILD=0
 BUILD_ARGS=
@@ -100,70 +102,81 @@ if [ -z "$PATCHVER" ]; then
 	fi
 fi
 
-echo "Refreshing Kernel $KERNEL to release $PATCHVER ..."
-
-targets=$(ls -b target/linux)
-
-if [ "$TEST" -eq 1 ]; then
-	CMD="echo"
-fi
-
-for target in $targets; do
-	if [ "$target" = "generic" -o -f "$target" ]; then
-		continue
+doit() {
+	if [ "$target" = "generic" ] || [ -f "$target" ]; then
+		return
 	fi
 
-	grep -q "broken" target/linux/$target/Makefile && { \
-		echo "Skipping $target (broken)"
-		continue
-	}
+	if grep -q "broken" target/linux/"$target"/Makefile; then
+    echo "Skipping $target (broken)"
+    return
+  fi
 
-	if [ -e tmp/${target}_${PATCHVER}_done ]; then
-		continue
+	if [ -e tmp/"${target}_${PATCHVER}"_done ]; then
+		return
 	fi
 
-	grep -q "${PATCHVER}" target/linux/$target/Makefile || \
-	[ -f target/linux/$target/config-${KERNEL} ] || \
-	[ -d target/linux/$target/patches-${KERNEL} ] && {
-		echo "refreshing $target ..."
+	grep -q "${PATCHVER}" target/linux/"$target"/Makefile \
+    || [ -f target/linux/"$target"/config-"${KERNEL}" ] \
+    || [ -d target/linux/"$target"/patches-"${KERNEL}" ] &&
+    
+    {
+		echo " ---> refreshing $target"
 		$CMD echo "CONFIG_TARGET_$target=y" > .config || exit 1
 		$CMD echo "CONFIG_ALL_KMODS=y" >> .config || exit 1
-		$CMD make defconfig KERNEL_PATCHVER=${KERNEL} || exit 1
-		if [ ! -f tmp/${target}_${PATCHVER}_refreshed ]; then
-			$CMD make target/linux/refresh V=$VERBOSE KERNEL_PATCHVER=${KERNEL} LINUX_VERSION=${PATCHVER} LINUX_KERNEL_HASH=skip || exit 1
-			$CMD make target/linux/prepare V=$VERBOSE KERNEL_PATCHVER=${KERNEL} LINUX_VERSION=${PATCHVER} || exit 1
-			$CMD touch tmp/${target}_${PATCHVER}_refreshed
+		$CMD make defconfig KERNEL_PATCHVER="${KERNEL}" || exit 1
+
+		if [ ! -f tmp/"${target}_${PATCHVER}_refreshed" ]; then
+			$CMD make target/linux/refresh V="$VERBOSE" KERNEL_PATCHVER="${KERNEL}" LINUX_VERSION="${PATCHVER}" LINUX_KERNEL_HASH=skip || exit 1
+			$CMD make target/linux/prepare V="$VERBOSE" KERNEL_PATCHVER="${KERNEL}" LINUX_VERSION="${PATCHVER}" || exit 1
+			$CMD touch tmp/"${target}_${PATCHVER}_refreshed"
 		fi
-		if [ "$BUILD" = "1" ]; then
+
+    if [ "$BUILD" = "1" ]; then
 			echo "building $target ... "
-			$CMD make V=$VERBOSE KERNEL_PATCHVER=${KERNEL} LINUX_VERSION=${PATCHVER} $BUILD_ARGS || exit 1
+			$CMD make V="$VERBOSE" KERNEL_PATCHVER="${KERNEL}" LINUX_VERSION="${PATCHVER}" "$BUILD_ARGS" || exit 1
 		fi
-		$CMD make target/linux/clean
-		$CMD touch tmp/${target}_${PATCHVER}_done
-	} || {
-		echo "skipping $target (no support for $KERNEL)"
-	}
-done
+		
+    $CMD make target/linux/clean
+		$CMD touch tmp/"${target}_${PATCHVER}_done"
+	} || echo " ---> skipping $target (no support for $KERNEL)"
+}
 
+updatesums() {
 if [ "$UPDATE" -eq 1 ]; then
-	NEWVER=${PATCHVER#$KERNEL}
+	NEWVER="${PATCHVER#"$KERNEL"}"
 	if [ "$TEST" -eq 1 ]; then
-		echo ./staging_dir/host/bin/mkhash sha256 dl/linux-$PATCHVER.tar.xz
+		echo ./staging_dir/host/bin/mkhash sha256 dl/linux-"$PATCHVER".tar.xz
 	fi
 
-	if [ -f dl/linux-$PATCHVER.tar.xz ]; then
-		CHECKSUM=$(./staging_dir/host/bin/mkhash sha256 dl/linux-$PATCHVER.tar.xz)
+	if [ -f dl/linux-"$PATCHVER".tar.xz ]; then
+		CHECKSUM=$(./staging_dir/host/bin/mkhash sha256 dl/linux-"$PATCHVER".tar.xz)
 	fi
 
-	if [ -f include/kernel-${KERNEL} ]; then
+	if [ -f include/kernel-"${KERNEL}" ]; then
 		# split version files
-		KERNEL_VERSION_FILE=include/kernel-${KERNEL}
+		KERNEL_VERSION_FILE=include/kernel-"${KERNEL}"
 	else
 		# unified version file
 		KERNEL_VERSION_FILE=include/kernel-version.mk
 	fi
 
-	$CMD ./staging_dir/host/bin/sed -i ${KERNEL_VERSION_FILE} \
+	$CMD ./staging_dir/host/bin/sed -i "${KERNEL_VERSION_FILE}" \
 		-e "s|LINUX_VERSION-${KERNEL} =.*|LINUX_VERSION-${KERNEL} = ${NEWVER}|" \
 		-e "s|LINUX_KERNEL_HASH-${KERNEL}.*|LINUX_KERNEL_HASH-${PATCHVER} = ${CHECKSUM}|"
 fi
+}
+
+echo "Refreshing Kernel $KERNEL to release $PATCHVER ..."
+
+mapfile -t targets < <(find target/linux -maxdepth 1 -type d | grep -o '[^/]*$' | sort)
+
+if [ "$TEST" -eq 1 ]; then
+	CMD="echo"
+fi
+
+for target in "${targets[@]}"; do
+  doit "$target"
+done
+
+updatesums
